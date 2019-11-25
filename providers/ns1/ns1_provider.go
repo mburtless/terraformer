@@ -15,10 +15,11 @@
 package ns1
 
 import (
-	"os"
 	"errors"
+	"os"
+
 	"github.com/GoogleCloudPlatform/terraformer/terraform_utils"
-		"github.com/GoogleCloudPlatform/terraformer/terraform_utils/provider_wrapper"
+	"github.com/GoogleCloudPlatform/terraformer/terraform_utils/provider_wrapper"
 )
 
 type NS1Provider struct {
@@ -45,7 +46,7 @@ func (p *NS1Provider) GetProviderData(arg ...string) map[string]interface{} {
 		"provider": map[string]interface{}{
 			"ns1": map[string]interface{}{
 				"version": provider_wrapper.GetProviderVersion(p.GetName()),
-				"apikey": p.apiKey,
+				"apikey":  p.apiKey,
 			},
 		},
 	}
@@ -55,10 +56,9 @@ func (NS1Provider) GetResourceConnections() map[string]map[string][]string {
 	return map[string]map[string][]string{}
 }
 
-
 func (p *NS1Provider) GetSupportedService() map[string]terraform_utils.ServiceGenerator {
 	return map[string]terraform_utils.ServiceGenerator{
-		"zone": &ZoneGenerator{},
+		"dns": &DNSGenerator{},
 	}
 }
 

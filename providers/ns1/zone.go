@@ -15,18 +15,21 @@
 package ns1
 
 import (
+	"fmt"
 	"log"
 	"strings"
 
 	"github.com/GoogleCloudPlatform/terraformer/terraform_utils"
+	api "gopkg.in/ns1/ns1-go.v2/rest"
 	"gopkg.in/ns1/ns1-go.v2/rest/model/dns"
 )
 
-type ZoneGenerator struct {
+type DNSGenerator struct {
 	NS1Service
 }
 
-func (z ZoneGenerator) createResources(zoneList []*dns.Zone) []terraform_utils.Resource {
+// TODO: DELETE ME
+func (z DNSGenerator) createZonesResourceOld(zoneList []*dns.Zone) []terraform_utils.Resource {
 	var resources []terraform_utils.Resource
 	for _, zone := range zoneList {
 		name := strings.ReplaceAll(zone.Zone, ".", "_")
@@ -51,38 +54,104 @@ func (z ZoneGenerator) createResources(zoneList []*dns.Zone) []terraform_utils.R
 	return resources
 }
 
-func (z *ZoneGenerator) InitResources() error {
+func (z DNSGenerator) createZonesResource(client *api.Client, zone *dns.Zone) ([]terraform_utils.Resource, error) {
+	name := strings.ReplaceAll(zone.Zone, ".", "_")
+	r := terraform_utils.NewResource(
+		zone.ID,
+		name,
+		"ns1_zone",
+		"ns1",
+		map[string]string{
+			"zone": zone.Zone,
+		},
+		[]string{},
+		map[string]interface{}{},
+		// add directly to state, not config
+		//map[string]interface{}{"autogenerate_ns_record": true},
+	)
+	return []terraform_utils.Resource{r}, nil
+}
+
+func (z DNSGenerator) createRecordsResources(client *api.Client, zone *dns.Zone) ([]terraform_utils.Resource, error) {
+	resources := []terraform_utils.Resource{}
+	rTypesToIgnore := []string{"RRSIG", "DNSKEY"}
+
+	// get zone for list of records
+	zoneDetails, _, err := client.Zones.Get(zone.Zone)
+	if err != nil {
+		log.Println(err)
+		return resources, err
+	}
+
+RECORDS:
+	for _, record := range zoneDetails.Records {
+		for _, t := range rTypesToIgnore {
+			if record.Type == t {
+				continue RECORDS
+			}
+		}
+
+		name := strings.ReplaceAll(record.Domain, ".", "_")
+		r := terraform_utils.NewResource(
+			record.ID,
+			fmt.Sprintf("%s_%s", record.Type, name),
+			"ns1_record",
+			"ns1",
+			map[string]string{
+				"zone":   zone.Zone,
+				"domain": record.Domain,
+				"type":   record.Type,
+			},
+			[]string{},
+			map[string]interface{}{},
+		)
+		resources = append(resources, r)
+	}
+
+	return resources, nil
+}
+
+func (z *DNSGenerator) InitResources() error {
 	client := z.generateClient()
 	zones, _, err := client.Zones.List()
 	if err != nil {
 		log.Println(err)
 		return err
 	}
-	z.Resources = z.createResources(zones)
+	//z.Resources = z.createZonesResource(zones)
+
+	funcs := []func(*api.Client, *dns.Zone) ([]terraform_utils.Resource, error){
+		z.createZonesResource,
+		z.createRecordsResources,
+	}
+
+	//loop through zones
+	for _, zone := range zones {
+		for _, f := range funcs {
+			tmpRes, err := f(client, zone)
+			if err != nil {
+				log.Println(err)
+				return err
+			}
+			z.Resources = append(z.Resources, tmpRes...)
+		}
+	}
 	return nil
 }
 
-func (z *ZoneGenerator) PostConvertHook() error {
+func (z *DNSGenerator) PostConvertHook() error {
 	for i, r := range z.Resources {
-		if r.InstanceInfo.Type != "ns1_zone" {
-			continue
-		}
-		// if secondaries networks found in state, delete from config
-		/*for k, _ := range z.Resources[i].InstanceState.Attributes {
-			if strings.Contains(k, "networks") && strings.HasPrefix(k, "secondaries") {
-				log.Printf("Networks key found at %s. Item: %v", k, z.Resources[i].Item)
+		if r.InstanceInfo.Type == "ns1_zone" {
+			// delete networks from any secondaries in config
+			if secondaries, ok := z.Resources[i].Item["secondaries"]; ok {
+				for _, secondary := range secondaries.([]interface{}) {
+					delete(secondary.(map[string]interface{}), "networks")
+				}
 			}
-		}*/
 
-		// delete networks from any secondaries in config
-		if secondaries, ok := z.Resources[i].Item["secondaries"]; ok {
-			for _, secondary := range secondaries.([]interface{}) {
-				delete(secondary.(map[string]interface{}), "networks")
-			}
+			// add autogenerate_ns_record default to state
+			z.Resources[i].InstanceState.Attributes["autogenerate_ns_record"] = "true"
 		}
-
-		// add autogenerate_ns_record default to state
-		z.Resources[i].InstanceState.Attributes["autogenerate_ns_record"] = "true"
 	}
 	return nil
 }
