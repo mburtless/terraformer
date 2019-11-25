@@ -17,6 +17,7 @@ package ns1
 import (
 	"log"
 	"strings"
+
 	"github.com/GoogleCloudPlatform/terraformer/terraform_utils"
 	"gopkg.in/ns1/ns1-go.v2/rest/model/dns"
 )
@@ -29,7 +30,7 @@ func (z ZoneGenerator) createResources(zoneList []*dns.Zone) []terraform_utils.R
 	var resources []terraform_utils.Resource
 	for _, zone := range zoneList {
 		name := strings.ReplaceAll(zone.Zone, ".", "_")
-		resources = append(resources, terraform_utils.NewResource(
+		r := terraform_utils.NewResource(
 			zone.ID,
 			name,
 			"ns1_zone",
@@ -39,9 +40,14 @@ func (z ZoneGenerator) createResources(zoneList []*dns.Zone) []terraform_utils.R
 			},
 			[]string{},
 			map[string]interface{}{},
-		))
+			// add directly to state, not config
+			//map[string]interface{}{"autogenerate_ns_record": true},
+		)
+		// remove secondaries networks from config
+		//r.IgnoreKeys = append(r.IgnoreKeys, "networks")
+		resources = append(resources, r)
 	}
-	log.Println(resources)
+	//log.Println(resources)
 	return resources
 }
 
@@ -53,5 +59,30 @@ func (z *ZoneGenerator) InitResources() error {
 		return err
 	}
 	z.Resources = z.createResources(zones)
+	return nil
+}
+
+func (z *ZoneGenerator) PostConvertHook() error {
+	for i, r := range z.Resources {
+		if r.InstanceInfo.Type != "ns1_zone" {
+			continue
+		}
+		// if secondaries networks found in state, delete from config
+		/*for k, _ := range z.Resources[i].InstanceState.Attributes {
+			if strings.Contains(k, "networks") && strings.HasPrefix(k, "secondaries") {
+				log.Printf("Networks key found at %s. Item: %v", k, z.Resources[i].Item)
+			}
+		}*/
+
+		// delete networks from any secondaries in config
+		if secondaries, ok := z.Resources[i].Item["secondaries"]; ok {
+			for _, secondary := range secondaries.([]interface{}) {
+				delete(secondary.(map[string]interface{}), "networks")
+			}
+		}
+
+		// add autogenerate_ns_record default to state
+		z.Resources[i].InstanceState.Attributes["autogenerate_ns_record"] = "true"
+	}
 	return nil
 }
